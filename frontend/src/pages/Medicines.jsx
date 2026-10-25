@@ -15,7 +15,7 @@ const allMedicines = [
     availability: 'In Stock',
     prescriptionRequired: false,
     description: 'Used for allergies, hay fever, and common cold symptoms.',
-    image: 'pill-icon'
+    image: 'https://images.unsplash.com/photo-1550572017-edb79a5bd3c1?w=500&auto=format&fit=crop&q=60&ixlib=rb-4.0.3'
   },
   {
     id: 'm5',
@@ -27,7 +27,7 @@ const allMedicines = [
     availability: 'In Stock',
     prescriptionRequired: true,
     description: 'Used to manage blood sugar levels in type 2 diabetes.',
-    image: 'pill-icon'
+    image: 'https://images.unsplash.com/photo-1471864190281-a93a3070b6de?w=500&auto=format&fit=crop&q=60&ixlib=rb-4.0.3'
   },
   {
     id: 'm6',
@@ -39,7 +39,7 @@ const allMedicines = [
     availability: 'In Stock',
     prescriptionRequired: false,
     description: 'Used to treat acid reflux, heartburn, and stomach ulcers.',
-    image: 'capsule-icon'
+    image: 'https://images.unsplash.com/photo-1607619056574-7b8d3ee536b2?w=500&auto=format&fit=crop&q=60&ixlib=rb-4.0.3'
   }
 ];
 
@@ -69,9 +69,13 @@ const Medicines = () => {
         
         <div className="card" style={{ padding: '2rem' }}>
           <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-            {/* Image placeholder */}
-            <div style={{ width: '200px', height: '200px', backgroundColor: 'var(--color-primary-light)', borderRadius: 'var(--radius-lg)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <Pill size={64} color="var(--color-primary)" />
+            {/* Image display */}
+            <div style={{ width: '200px', height: '200px', backgroundColor: 'var(--color-primary-light)', borderRadius: 'var(--radius-lg)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
+              {med.image && med.image.startsWith('http') ? (
+                <img src={med.image} alt={med.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                <Pill size={64} color="var(--color-primary)" />
+              )}
             </div>
             
             <div style={{ flex: 1, minWidth: '250px' }}>
@@ -173,9 +177,13 @@ const Medicines = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1.5rem' }}>
         {filtered.map(med => (
           <div key={med.id} className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-            {/* Image Placeholder */}
-            <div style={{ height: '120px', backgroundColor: 'var(--color-primary-light)', borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem' }}>
-              <Pill size={48} color="var(--color-primary)" />
+            {/* Image display */}
+            <div style={{ height: '150px', backgroundColor: 'var(--color-primary-light)', borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem', overflow: 'hidden' }}>
+              {med.image && med.image.startsWith('http') ? (
+                <img src={med.image} alt={med.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                <Pill size={48} color="var(--color-primary)" />
+              )}
             </div>
             
             <div style={{ flex: 1 }}>

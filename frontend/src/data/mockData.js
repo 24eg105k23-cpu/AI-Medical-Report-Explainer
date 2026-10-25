@@ -83,7 +83,7 @@ export const MOCK_MEDICINES = [
     availability: 'In Stock',
     prescriptionRequired: false,
     description: 'Used to treat mild to moderate pain and reduce fever.',
-    image: 'pill-icon'
+    image: 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=500&auto=format&fit=crop&q=60&ixlib=rb-4.0.3'
   },
   {
     id: 'm2',
@@ -95,7 +95,7 @@ export const MOCK_MEDICINES = [
     availability: 'In Stock',
     prescriptionRequired: true,
     description: 'Used to lower cholesterol levels in the blood.',
-    image: 'pill-icon'
+    image: 'https://images.unsplash.com/photo-1628771065518-0d82f1938462?w=500&auto=format&fit=crop&q=60&ixlib=rb-4.0.3'
   },
   {
     id: 'm3',
@@ -107,7 +107,7 @@ export const MOCK_MEDICINES = [
     availability: 'Low Stock',
     prescriptionRequired: true,
     description: 'An antibiotic used to treat various bacterial infections.',
-    image: 'capsule-icon'
+    image: 'https://images.unsplash.com/photo-1576086213369-97a306d36557?w=500&auto=format&fit=crop&q=60&ixlib=rb-4.0.3'
   }
 ];
 
