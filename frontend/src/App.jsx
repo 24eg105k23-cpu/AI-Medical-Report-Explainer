@@ -1,7 +1,8 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Activity, Bell, User, Menu, X, ShoppingCart } from 'lucide-react';
+import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
+import { Activity, User, Menu, X, LogIn, LogOut } from 'lucide-react';
 import './index.css';
+import { apiRequest, clearToken, getToken } from './api';
 import Dashboard from './pages/Dashboard';
 import Analyze from './pages/Analyze';
 import History from './pages/History';
@@ -11,19 +12,37 @@ import Cart from './pages/Cart';
 import Checkout from './pages/Checkout';
 import Orders from './pages/Orders';
 import Profile from './pages/Profile';
+import Login from './pages/Login';
 
 // Layout Component
 const Navbar = () => {
   const [isOpen, setIsOpen] = React.useState(false);
+  const [authenticated, setAuthenticated] = React.useState(Boolean(getToken()));
   const location = useLocation();
+  const navigate = useNavigate();
 
   const navLinks = [
     { name: 'Dashboard', path: '/' },
     { name: 'Medical Reports', path: '/history' },
-    { name: 'Prescription', path: '/prescription' },
-    { name: 'Medicines', path: '/medicines' },
-    { name: 'Orders', path: '/orders' }
+    { name: 'Prescription', path: '/prescription' }
   ];
+
+  React.useEffect(() => {
+    const updateAuth = () => setAuthenticated(Boolean(getToken()));
+    window.addEventListener('auth-change', updateAuth);
+    return () => window.removeEventListener('auth-change', updateAuth);
+  }, []);
+
+  const logout = async () => {
+    try {
+      if (getToken()) await apiRequest('/api/v1/auth/logout', { method: 'POST' });
+    } catch (error) {
+      window.alert(`Could not revoke the server session: ${error.message}`);
+    } finally {
+      clearToken();
+      navigate('/login');
+    }
+  };
 
   const isActive = (path) => location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
 
@@ -54,12 +73,18 @@ const Navbar = () => {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <Link to="/cart" style={{ position: 'relative', color: 'var(--color-text-muted)' }}>
-            <ShoppingCart size={24} />
-            <span style={{ position: 'absolute', top: '-8px', right: '-8px', backgroundColor: 'var(--color-primary)', color: 'white', borderRadius: '9999px', width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 700 }}>2</span>
-          </Link>
-          <button style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)' }}><Bell size={24} /></button>
-          <Link to="/profile" style={{ color: 'var(--color-text-muted)' }}><User size={24} /></Link>
+          {authenticated ? (
+            <>
+              <Link to="/profile" aria-label="Profile" style={{ color: 'var(--color-text-muted)' }}><User size={24} /></Link>
+              <button className="btn btn-secondary" onClick={logout} style={{ padding: '0.5rem 0.75rem' }}>
+                <LogOut size={18} /> Sign out
+              </button>
+            </>
+          ) : (
+            <Link to="/login" className="btn btn-secondary" style={{ padding: '0.5rem 0.75rem' }}>
+              <LogIn size={18} /> Sign in
+            </Link>
+          )}
           <button className="mobile-menu-btn" onClick={() => setIsOpen(!isOpen)} style={{ background: 'none', border: 'none', color: 'var(--color-text-main)' }}>
             {isOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
@@ -124,6 +149,7 @@ const App = () => {
             <Route path="/checkout" element={<Checkout />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/profile" element={<Profile />} />
+            <Route path="/login" element={<Login />} />
             <Route path="*" element={<div className="container" style={{ padding: '2rem 0' }}><h2>Page not found</h2></div>} />
           </Routes>
         </main>

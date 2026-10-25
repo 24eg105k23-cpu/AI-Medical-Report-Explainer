@@ -1,34 +1,42 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.logging import get_logger
-from app.db.base import Base
-from app.db.session import SessionLocal, engine
+from app.db.session import get_db, verify_database_connection, verify_database_schema_current
 from app.schemas.common import HealthStatus
 from app.services.ocr_service import ocr_service
-from app.services.rag_service import rag_service
 
 logger = get_logger("main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure DB tables exist and seed initial reference corpus
-    logger.info("Initializing database tables...")
-    Base.metadata.create_all(bind=engine)
-
-    try:
-        with SessionLocal() as db:
-            rag_service.initialize_reference_corpus(db)
-        logger.info("Reference corpus successfully initialized.")
-    except Exception as e:
-        logger.warning(f"Could not initialize reference corpus at startup: {e}")
-
+    if settings.APP_ENV != "test":
+        if len(settings.SECRET_KEY) < 32 or settings.SECRET_KEY.lower().startswith("replace-"):
+            raise RuntimeError(
+                "SECRET_KEY must be a private random value of at least 32 characters. "
+                "Generate one locally and set it in backend/.env."
+            )
+        if settings.APP_ENV.lower() in {"production", "prod"} and settings.DEBUG:
+            raise RuntimeError("DEBUG must be false when APP_ENV is production.")
+        if not settings.DB_PASSWORD:
+            raise RuntimeError(
+                "DB_PASSWORD is not configured. Copy .env.example to .env, set a local "
+                "application password, and run the SQL setup script."
+            )
+        mysql_version = verify_database_connection()
+        logger.info(
+            "Connected to MySQL Server %s; native vector search is not assumed or used. "
+            "RAG retrieval mode: %s.",
+            mysql_version,
+            settings.RETRIEVAL_MODE,
+        )
     logger.info(f"{settings.APP_NAME} started in {settings.APP_ENV} mode.")
     yield
     # Shutdown
@@ -93,22 +101,22 @@ async def generic_exception_handler(request: Request, exc: Exception):
     tags=["System"],
     summary="Health check probe",
 )
-def health_check():
+def health_check(db: Session = Depends(get_db)):
     db_connected = False
     try:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
-            db_connected = True
+        db.execute(text("SELECT 1"))
+        db_connected = True
     except Exception as e:
         logger.error(f"Health check DB ping failed: {e}")
 
+    ocr_available = ocr_service.tesseract_available
     return HealthStatus(
-        status="healthy" if db_connected else "degraded",
+        status="healthy" if db_connected and ocr_available else "degraded",
         app_name=settings.APP_NAME,
         environment=settings.APP_ENV,
         version="1.0.0",
         database_connected=db_connected,
-        ocr_engine_available=True,
+        ocr_engine_available=ocr_available,
         llm_provider=settings.LLM_PROVIDER,
     )
 
@@ -119,13 +127,20 @@ def health_check():
     tags=["System"],
     summary="Readiness check probe",
 )
-def ready_check():
+def ready_check(db: Session = Depends(get_db)):
     try:
-        with SessionLocal() as db:
-            db.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
+        if not verify_database_schema_current(db.connection()):
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "error": "Database migrations are not up to date."},
+            )
         return {"status": "ready"}
-    except Exception as e:
-        return JSONResponse(status_code=503, content={"status": "not_ready", "error": str(e)})
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "error": "Database is unavailable or migrations are missing."},
+        )
 
 
 # Mount API V1

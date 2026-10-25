@@ -1,3 +1,4 @@
+import hashlib
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -25,6 +26,37 @@ from app.services.report_parser import report_parser
 
 logger = get_logger("analyses_api")
 router = APIRouter(tags=["Medical Report Analysis"])
+
+
+def _analysis_response(analysis: ReportAnalysis, db: Session) -> ReportAnalysisResponse:
+    lab_vals = db.query(LaboratoryValue).filter(LaboratoryValue.analysis_id == analysis.id).all()
+    parsed_vals = [
+        LaboratoryValueSchema(
+            id=value.id,
+            test_name=value.test_name,
+            value_text=value.value_text,
+            numeric_value=value.numeric_value,
+            unit=value.unit,
+            reference_range=value.reference_range,
+            abnormality_status=value.abnormality_status,
+            source_location=value.source_location,
+            verification_status=value.verification_status,
+        )
+        for value in lab_vals
+    ]
+    explanation = StructuredExplanationSchema(**analysis.explanation)
+    return ReportAnalysisResponse(
+        id=analysis.id,
+        document_id=analysis.document_id,
+        analysis_status=analysis.analysis_status,
+        model_provider=analysis.model_provider,
+        created_at=analysis.created_at,
+        summary=explanation.summary,
+        stats=analysis.structured_results.get("stats", {}),
+        laboratory_values=parsed_vals,
+        explanation=explanation,
+        sources=explanation.source_citations,
+    )
 
 
 @router.post(
@@ -60,6 +92,27 @@ def analyze_document(
             detail="Document has no extracted text to analyze. Please upload a clear document or enter text manually.",
         )
 
+    text_hash = hashlib.sha256(ocr_rec.extracted_text.encode("utf-8")).hexdigest()
+    if not request.force_reanalyze:
+        cached_analysis = (
+            db.query(ReportAnalysis)
+            .filter(ReportAnalysis.document_id == document.id)
+            .order_by(ReportAnalysis.created_at.desc())
+            .first()
+        )
+        cached_options = (cached_analysis.structured_results or {}) if cached_analysis else {}
+        if (
+            cached_analysis
+            and cached_options.get("source_text_sha256") == text_hash
+            and cached_options.get("include_rag_sources") == request.include_rag_sources
+            and cached_analysis.model_provider == settings.LLM_PROVIDER
+        ):
+            return APIResponse(
+                success=True,
+                message="Existing analysis returned; set force_reanalyze to generate it again.",
+                data=_analysis_response(cached_analysis, db),
+            )
+
     # 2. Parse report text into structured lab values
     parsed_values, parse_meta = report_parser.parse_report_text(ocr_rec.extracted_text)
 
@@ -70,8 +123,20 @@ def analyze_document(
     else:
         rag_query = ocr_rec.extracted_text[:300]
 
-    retrieved_chunk_tuples = rag_service.retrieve_relevant_sources(db, query=rag_query, top_k=settings.VECTOR_SEARCH_TOP_K)
+    retrieved_chunk_tuples = (
+        rag_service.retrieve_relevant_sources(db, query=rag_query, top_k=settings.VECTOR_SEARCH_TOP_K)
+        if request.include_rag_sources
+        else []
+    )
     retrieved_sources = [item[0] for item in retrieved_chunk_tuples]
+    retrieved_context = [
+        {
+            "source": source.model_dump(mode="json"),
+            "passage": passage,
+            "score": score,
+        }
+        for source, passage, score in retrieved_chunk_tuples
+    ]
 
     # 4. Generate structured explanation via LLM provider
     llm = get_llm_provider()
@@ -79,6 +144,7 @@ def analyze_document(
         lab_values=parsed_values,
         retrieved_sources=retrieved_sources,
         raw_text_snippet=ocr_rec.extracted_text[:1000],
+        retrieved_context=retrieved_context,
     )
 
     # 5. Strict citation validation
@@ -95,6 +161,8 @@ def analyze_document(
         structured_results={
             "stats": parse_meta["stats"],
             "total_detected": len(parsed_values),
+            "source_text_sha256": text_hash,
+            "include_rag_sources": request.include_rag_sources,
         },
         explanation=explanation_schema.model_dump(),
         model_provider=settings.LLM_PROVIDER,
@@ -170,42 +238,10 @@ def get_analysis(
     """
     Retrieve completed report analysis, structured findings, and source citations.
     """
-    lab_vals = db.query(LaboratoryValue).filter(LaboratoryValue.analysis_id == analysis.id).all()
-    parsed_vals = []
-    for lv in lab_vals:
-        parsed_vals.append(
-            LaboratoryValueSchema(
-                id=lv.id,
-                test_name=lv.test_name,
-                value_text=lv.value_text,
-                numeric_value=lv.numeric_value,
-                unit=lv.unit,
-                reference_range=lv.reference_range,
-                abnormality_status=lv.abnormality_status,
-                source_location=lv.source_location,
-                verification_status=lv.verification_status,
-            )
-        )
-
-    explanation_obj = StructuredExplanationSchema(**analysis.explanation)
-
-    response_data = ReportAnalysisResponse(
-        id=analysis.id,
-        document_id=analysis.document_id,
-        analysis_status=analysis.analysis_status,
-        model_provider=analysis.model_provider,
-        created_at=analysis.created_at,
-        summary=explanation_obj.summary,
-        stats=analysis.structured_results.get("stats", {}),
-        laboratory_values=parsed_vals,
-        explanation=explanation_obj,
-        sources=explanation_obj.source_citations,
-    )
-
     return APIResponse(
         success=True,
         message="Analysis retrieved successfully.",
-        data=response_data,
+        data=_analysis_response(analysis, db),
     )
 
 

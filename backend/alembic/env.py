@@ -2,7 +2,7 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
 # Ensure backend root is on sys.path
 backend_dir = Path(__file__).resolve().parent.parent
@@ -18,15 +18,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set database URL dynamically from app settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")
+    url = settings.MIGRATION_DATABASE_URL.render_as_string(hide_password=False)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -40,28 +37,33 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    connect_args = {}
-    if settings.DATABASE_URL.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
-
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL
-
-    connectable = engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-        connect_args=connect_args,
-    )
-
-    with connectable.connect() as connection:
+    connection = config.attributes.get("connection")
+    if connection is not None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
         )
-
         with context.begin_transaction():
             context.run_migrations()
+        return
+
+    if not settings.DB_MIGRATION_PASSWORD:
+        raise RuntimeError(
+            "DB_MIGRATION_PASSWORD is not configured. Set the local Alembic "
+            "migration-user password in .env before running online migrations."
+        )
+
+    connectable = create_engine(settings.MIGRATION_DATABASE_URL, poolclass=pool.NullPool)
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

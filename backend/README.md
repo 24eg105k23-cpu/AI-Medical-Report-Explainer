@@ -1,244 +1,236 @@
-# AI-Powered Medical Report Analysis & Prescription Understanding System
+# AI Medical Report Analysis System — Backend
 
-## Backend Service
+FastAPI, SQLAlchemy 2.x, Alembic, and MySQL Community Server. Medical documents
+are stored in the local upload directory; MySQL stores document references,
+metadata, extracted data, analyses, prescriptions, and audit events.
 
-An educational prototype engineered with FastAPI, SQLAlchemy 2.x, Alembic, OCR (PyMuPDF & Tesseract), and Retrieval-Augmented Generation (RAG).
+> Educational prototype only. It does not diagnose, prescribe, or replace
+> qualified medical advice.
 
-> **IMPORTANT MEDICAL DISCLAIMER**: This system is designed solely for educational and research prototyping. It must not be used to replace professional medical judgment, provide clinical diagnoses, or independently prescribe or alter medications.
+## Architecture
 
----
+- MySQL is the only application database. The application connects through
+  PyMySQL using `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`.
+  SQLAlchemy builds the URL using `URL.create`, so special characters in
+  credentials are escaped correctly.
+- Alembic owns schema changes. The API never calls `create_all()` and never
+  drops/recreates a database on startup.
+- SQLAlchemy 2.x models cover users, uploaded documents, OCR results, report
+  analyses, laboratory values, prescription records/items, medical references,
+  RAG metadata, and audit events. Laboratory measurements use `DECIMAL(20, 8)`
+  while `value_text` and `unit` preserve the originally extracted value.
+- Uploaded document binaries remain in `data/uploads`; large files are not
+  stored in MySQL. OCR text uses MySQL `MEDIUMTEXT` for the configured upload
+  limit and supports existing review and analysis workflows.
+- RAG is replaceable and offline by default. `RETRIEVAL_MODE=local_tfidf`
+  performs local lexical TF-IDF-like relevance scoring; it does not use a vector
+  database or semantic embeddings. `RETRIEVAL_MODE=mock` enables deterministic
+  mock retrieval for tests. Retrieval uses only reference documents explicitly
+  ingested into this database; startup does not add sample references. Neither
+  mode requires a paid embedding service. The
+  configured local MySQL Server version is checked at startup; native MySQL
+  vector search is not assumed or used.
+- Gemini can be selected with `LLM_PROVIDER=gemini`, `GEMINI_API_KEY`, and
+  `GEMINI_MODEL` in the backend-only `.env` file. `GEMINI_TIMEOUT_SECONDS`
+  defaults to 180 seconds. The key is sent to Google in
+  an HTTP header, not embedded in the request URL or frontend. Report values
+  and retrieved reference passages are sent to the configured provider to generate
+  explanations. Missing provider configuration and provider errors are returned
+  explicitly; the application does not silently substitute mock output. Use
+  `LLM_PROVIDER=mock` for offline development.
 
-## 1. System Architecture
+## Requirements
 
-The backend adopts a modular, domain-driven structure with strict separation of concerns:
+- Windows, macOS, or Linux
+- Python 3.11+
+- Locally installed and running MySQL Community Server 8.0+
+- MySQL administrator credentials only for the one-time local setup (never for
+  the application)
+- Tesseract OCR for scanned images and PDF pages. If it is unavailable, scanned
+  pages are reported as unextracted and the frontend allows manual text entry.
+  Set `TESSERACT_CMD` if the executable is not on `PATH`.
 
+## Local setup (Windows PowerShell)
+
+Run these commands from the `backend` directory.
+
+1. Create and activate a virtual environment, then install dependencies:
+
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   python -m pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+2. Copy the template, choose different values for `DB_PASSWORD` and
+   `DB_MIGRATION_PASSWORD`, and generate a private JWT secret:
+
+   ```powershell
+   Copy-Item .env.example .env
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+   Put the printed value in `SECRET_KEY` in `.env`. The API refuses to start
+   with a missing or short secret. `LLM_PROVIDER=mock` is the default and
+   requires no paid credentials. `DATABASE_URL` in the template is illustrative;
+   runtime configuration is safely built from the `DB_*` values.
+
+3. Open `sql/mysql_setup.sql`, replace all example passwords (using the same
+   application and migration passwords as in `.env`), then run the
+   script in a local MySQL administrator session. For the default MySQL 8
+   Windows installation:
+
+   ```powershell
+   Get-Content -Raw .\sql\mysql_setup.sql | & 'C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe' -u root -p
+   ```
+
+   The setup script creates `medical_report_db` and the separate
+   `medical_report_test` database, plus separate local users. The application
+   application user gets DML permissions only. A separate migration user gets
+   DML plus schema privileges, all scoped to `medical_report_db`. Do not put
+   the MySQL administrator password in `.env`.
+
+4. Update both passwords in `.env`. Check application connectivity:
+
+   ```powershell
+   python scripts/check_db.py
+   ```
+
+   This prints the server version and selected database, but masks the password.
+The API refuses to start with a missing password, unavailable database, or
+missing/short JWT secret. `/ready` reports ready only when the database schema
+is at the current Alembic migration head.
+
+5. Apply schema migrations and launch the API:
+
+   ```powershell
+   alembic upgrade head
+   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+   ```
+
+   Startup does not create tables or add sample reference documents; run migrations first.
+
+   To enable Gemini, set these in `backend/.env` and restart the backend:
+
+   ```dotenv
+   LLM_PROVIDER=gemini
+   GEMINI_API_KEY=your_gemini_api_key
+   GEMINI_MODEL=gemini-3.8-flash
+   GEMINI_TIMEOUT_SECONDS=180
+   ```
+
+   Keep the key in this ignored local file; never put it in frontend variables,
+   source code, or commits. Missing credentials and provider errors are returned
+   explicitly. Select `LLM_PROVIDER=mock` for offline operation.
+
+Swagger UI is at `http://127.0.0.1:8000/docs`; health and readiness endpoints
+are `/health` and `/ready`.
+
+### SQL setup commands
+
+The included [mysql_setup.sql](./sql/mysql_setup.sql) contains the executable
+setup. The equivalent core commands are:
+
+```sql
+CREATE DATABASE IF NOT EXISTS medical_report_db
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE USER IF NOT EXISTS 'medical_app'@'127.0.0.1'
+  IDENTIFIED BY 'your_local_application_password';
+CREATE USER IF NOT EXISTS 'medical_migrator'@'127.0.0.1'
+  IDENTIFIED BY 'your_local_migration_password';
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON medical_report_db.* TO 'medical_app'@'127.0.0.1';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES, DROP
+  ON medical_report_db.* TO 'medical_migrator'@'127.0.0.1';
 ```
-backend/
-├── app/
-│   ├── main.py                     # FastAPI application entrypoint, CORS, exception handlers
-│   ├── core/
-│   │   ├── config.py               # Settings management via Pydantic Settings & .env
-│   │   ├── security.py             # Bcrypt hashing & PyJWT token management
-│   │   ├── logging.py              # Privacy-preserving logging
-│   │   └── exceptions.py           # Domain exceptions
-│   ├── db/
-│   │   ├── base.py                 # DeclarativeBase, UUID generators
-│   │   └── session.py              # SQLAlchemy 2.0 Engine and get_db session dependency
-│   ├── models/                     # SQLAlchemy 2.0 Database Models
-│   │   ├── user.py                 # User authentication and status
-│   │   ├── document.py             # Uploaded medical document records
-│   │   ├── ocr_result.py           # Text extraction results and confidence metadata
-│   │   ├── report_analysis.py      # Structured report explanations
-│   │   ├── laboratory_value.py     # Parsed test parameters, ranges, flags
-│   │   ├── prescription_item.py    # Extracted medications and confirmation state
-│   │   ├── reference_document.py   # RAG medical knowledge chunks
-│   │   └── audit_event.py          # Secure audit trail (no sensitive data)
-│   ├── schemas/                    # Pydantic v2 schemas for request/response validation
-│   ├── services/
-│   │   ├── document_storage.py     # Magic byte verification, safe UUID storage
-│   │   ├── document_extraction.py  # PyMuPDF digital PDF & OCR orchestrator
-│   │   ├── ocr_service.py          # Image OCR engine with Tesseract fallback
-│   │   ├── report_parser.py        # Laboratory report parsing and status flags
-│   │   ├── llm_service.py          # Provider-agnostic LLM interface (Mock + OpenAI)
-│   │   ├── rag_service.py          # Reference corpus ingestion, TF-IDF vector retrieval
-│   │   ├── prescription_parser.py  # Medication extraction with uncertainty flags
-│   │   └── audit_service.py        # Privacy-conscious audit recording
-│   └── api/
-│       ├── dependencies.py         # JWT auth, user resolution, IDOR checks
-│       └── v1/
-│           ├── auth.py             # /auth/register, /auth/login, /auth/me, /auth/logout
-│           ├── documents.py        # /documents/upload, list, get, text review/edit, delete
-│           ├── analyses.py         # /documents/{id}/analyze, /analyses/{id}, /values, /sources
-│           ├── prescriptions.py    # /process-prescription, /prescription, /confirm
-│           └── explanations.py     # /explanations, /reference-sources
-├── alembic/                        # Alembic migration scripts
-├── data/
-│   ├── sample_reports/             # Synthetic test PDFs and PNG images
-│   ├── uploads/                    # Local document storage
-│   └── references/                 # Trusted medical reference docs
-├── scripts/
-│   ├── generate_sample_data.py     # Generates synthetic sample reports
-│   ├── ingest_references.py        # Ingests trusted reference documents into RAG
-│   └── demo_workflow.py            # End-to-end 10-step demonstration runner
-├── tests/                          # Automated pytest suite (31 tests)
-├── alembic.ini                     # Alembic configuration
-├── Dockerfile                      # Production container image
-├── docker-compose.yml              # PostgreSQL + Backend stack
-├── requirements.txt                # Python dependencies
-└── .env.example                    # Environment variable template
-```
 
----
+`DROP` is scoped to the application database and is required by migration
+downgrades. The running API does not use the migration account.
 
-## 2. Prerequisites & Environment Setup
+## Migrations
 
-### Prerequisites
-- Python 3.11, 3.12, 3.13, or 3.14
-- Git
-- (Optional) Docker and Docker Compose
+```powershell
+# Apply all migrations
+alembic upgrade head
 
-### Step 1: Create Virtual Environment
-```bash
-cd backend
-python -m venv venv
-```
+# Inspect the current schema revision
+alembic current
 
-Activate the virtual environment:
-- **Windows (PowerShell)**:
-  ```powershell
-  .\venv\Scripts\Activate.ps1
-  ```
-- **Windows (Command Prompt)**:
-  ```cmd
-  .\venv\Scripts\activate.bat
-  ```
-- **Linux / macOS**:
-  ```bash
-  source venv/bin/activate
-  ```
+# Create a migration after changing models (review it before applying)
+alembic revision --autogenerate -m "describe schema change"
 
-### Step 2: Install Dependencies
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### Step 3: Configure Environment Variables
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
-*Note: The default `.env` is configured with `LLM_PROVIDER=mock` and SQLite database, enabling immediate zero-configuration startup without requiring paid API keys or external services.*
-
----
-
-## 3. Database Initialization & Migrations
-
-Run database migrations using Alembic:
-```bash
+# Apply a specific next migration
 alembic upgrade head
 ```
 
-Generate synthetic demonstration documents:
-```bash
-python scripts/generate_sample_data.py
-```
+For an intentional rollback, review the migration first and then run
+`alembic downgrade -1`. Keep each migration under `alembic/versions/` in source
+control. Never use `Base.metadata.create_all()` as a deployment mechanism.
 
-Ingest initial trusted medical reference documents for RAG:
-```bash
-python scripts/ingest_references.py
-```
+## Tests
 
----
+The regular offline suite uses a private in-memory SQLite database and applies
+the real Alembic migration chain to it. It never touches the development
+database. Run from `backend`:
 
-## 4. Running the Development Server
-
-Start the FastAPI application with Uvicorn:
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Once started:
-- **API Base URL**: `http://localhost:8000`
-- **Interactive Swagger Documentation**: `http://localhost:8000/docs`
-- **ReDoc Documentation**: `http://localhost:8000/redoc`
-- **Health Check Probe**: `http://localhost:8000/health`
-- **Readiness Probe**: `http://localhost:8000/ready`
-
----
-
-## 5. Running Automated Tests
-
-Run the full automated test suite with pytest:
-```bash
+```powershell
 pytest -v
 ```
 
-To run with coverage:
-```bash
-pytest --cov=app tests/
+For actual MySQL connectivity, migration, CRUD, constraints, rollback, and
+ownership-isolation verification, point the integration tests only at the
+dedicated local test database. Do not use `medical_report_db` here:
+
+```powershell
+$env:MYSQL_TEST_DATABASE_URL = 'mysql+pymysql://medical_test:URL_ENCODED_TEST_PASSWORD@127.0.0.1:3306/medical_report_test'
+pytest -v tests/test_mysql_integration.py
+Remove-Item Env:MYSQL_TEST_DATABASE_URL
 ```
 
-All 31 tests run completely offline using in-memory databases and synthetic test documents.
+URL-encode special characters in the test password.
 
----
+The integration tests reject non-local hosts and database names that do not
+look like test databases. They apply migrations to `medical_report_test`, and
+test records are rolled back or deleted. The test suite also includes a
+deliberately unreachable local port to verify database failure messages.
 
-## 6. Running the End-to-End Demonstration Workflow
+## Sample API requests
 
-Execute the comprehensive 10-step automated demonstration:
-```bash
-python scripts/demo_workflow.py
+Register and log in, then use the returned access token:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/v1/auth/register `
+  -H "Content-Type: application/json" `
+  -d '{"email":"patient@example.test","password":"a-local-test-password"}'
+
+curl.exe -X POST http://127.0.0.1:8000/api/v1/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"email":"patient@example.test","password":"a-local-test-password"}'
 ```
 
-This script automatically executes:
-1. User registration & JWT authentication
-2. Uploading a synthetic CBC laboratory report
-3. Extracting text directly from PDF
-4. Reviewing extracted OCR text
-5. Parsing laboratory values (Hemoglobin, WBC Count, Platelets, etc.)
-6. Generating patient-friendly plain-language explanation via Mock LLM
-7. Evaluating normal vs. abnormal flags against the report's reference intervals
-8. Grounding explanations in trusted RAG medical reference sources
-9. Strict citation validation (no hallucinated sources)
-10. Prescription processing with uncertainty detection and human confirmation
+Upload a report (replace `<TOKEN>` with the login response token):
 
----
-
-## 7. Running with Docker Compose (PostgreSQL)
-
-To run the complete stack with PostgreSQL in Docker:
-```bash
-docker-compose up --build
-```
-This automatically boots PostgreSQL, applies database migrations, seeds reference documents, and starts the FastAPI backend at `http://localhost:8000`.
-
-To stop the containers:
-```bash
-docker-compose down
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/v1/documents/upload `
+  -H "Authorization: Bearer <TOKEN>" `
+  -F "file=@data/sample_reports/synthetic_cbc_report.pdf"
 ```
 
----
+Analyze it, replacing `<DOCUMENT_ID>` with the upload response ID:
 
-## 8. API Endpoint Reference
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/documents/<DOCUMENT_ID>/analyze" `
+  -H "Authorization: Bearer <TOKEN>"
+```
 
-### Authentication
-- `POST /api/v1/auth/register` - Create user account
-- `POST /api/v1/auth/login` - Authenticate and obtain JWT Bearer token
-- `GET /api/v1/auth/me` - View current user profile
-- `POST /api/v1/auth/logout` - Invalidate current session token
+## Docker option
 
-### Document Management
-- `POST /api/v1/documents/upload` - Secure document upload (PDF, PNG, JPEG) with signature verification
-- `GET /api/v1/documents` - List authenticated user's documents
-- `GET /api/v1/documents/{id}` - Retrieve single document details
-- `GET /api/v1/documents/{id}/status` - Check document processing status
-- `GET /api/v1/documents/{id}/text` - View extracted OCR text for user review
-- `PATCH /api/v1/documents/{id}/text` - Correct or edit OCR text before analysis
-- `DELETE /api/v1/documents/{id}` - Delete document and purge file from disk
+Docker Compose runs only the API container and connects it to the locally
+installed MySQL service through `host.docker.internal`. Create and configure
+`backend/.env` and apply migrations on the host first. The database itself is
+not containerized:
 
-### Medical Report Analysis & Values
-- `POST /api/v1/documents/{id}/analyze` - Parse lab values and generate plain-language explanation
-- `GET /api/v1/analyses/{id}` - Retrieve analysis results and explanations
-- `GET /api/v1/documents/{id}/values` - Get structured laboratory values
-- `GET /api/v1/analyses/{id}/sources` - Get verified RAG reference citations
-
-### Prescription Understanding
-- `POST /api/v1/documents/{id}/process-prescription` - Extract medications and flag uncertain items
-- `GET /api/v1/documents/{id}/prescription` - Get extracted prescription items
-- `PATCH /api/v1/prescriptions/{id}/confirm` - Human review and confirmation of medication details
-
-### RAG & Medical Explanations
-- `POST /api/v1/explanations` - Query plain-language explanations grounded in reference sources
-- `GET /api/v1/reference-sources` - View ingested medical reference documents
-- `GET /health` - System health probe
-- `GET /ready` - Container readiness probe
-
----
-
-## 9. Key Safety & Security Features
-
-1. **Anti-Hallucination Citation Guard**: The LLM engine only cites reference sources that were genuinely retrieved and passed in context.
-2. **Missing Range Preservation**: If a lab report does not provide reference ranges, they remain `null` / unavailable; the system never invents reference ranges.
-3. **No Unilateral Prescription Alterations**: Uncertain medicine names or doses are flagged for explicit human confirmation.
-4. **Strict IDOR Protection**: Users cannot access, view, edit, or delete another user's documents or analyses.
-5. **Privacy Safeguards**: Uploaded files use non-guessable random UUID keys; passwords, tokens, and raw patient data are excluded from audit logs.
+```powershell
+docker compose up --build
+```

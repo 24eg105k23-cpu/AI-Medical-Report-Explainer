@@ -43,6 +43,8 @@ class DocumentExtractionService:
             pages_data: List[Dict[str, Any]] = []
             full_text_parts: List[str] = []
             scanned_pages_count = 0
+            ocr_failed_pages = 0
+            ocr_confidences: List[float] = []
 
             for page_idx in range(total_pages):
                 page = doc[page_idx]
@@ -50,6 +52,7 @@ class DocumentExtractionService:
 
                 # 1. Direct digital text extraction
                 page_text = page.get_text("text").strip()
+                ocr_meta: Dict[str, Any] = {}
 
                 # If page text is very sparse or empty, check if it's a scanned page
                 if len(page_text.split()) < 5:
@@ -65,6 +68,10 @@ class DocumentExtractionService:
                             ocr_text, ocr_meta = ocr_service.extract_from_image(temp_img_path)
                             if ocr_text:
                                 page_text = ocr_text
+                            if ocr_meta.get("confidence") is not None:
+                                ocr_confidences.append(float(ocr_meta["confidence"]))
+                            if not ocr_text.strip():
+                                ocr_failed_pages += 1
                         finally:
                             if temp_img_path.exists():
                                 temp_img_path.unlink(missing_ok=True)
@@ -74,6 +81,11 @@ class DocumentExtractionService:
                     "page_number": page_num,
                     "word_count": words_on_page,
                     "has_text": words_on_page > 0,
+                    **({
+                        "ocr_engine": ocr_meta.get("engine"),
+                        "ocr_confidence": ocr_meta.get("confidence"),
+                        "ocr_error": ocr_meta.get("error"),
+                    } if ocr_meta else {}),
                 })
 
                 if page_text:
@@ -88,9 +100,12 @@ class DocumentExtractionService:
             if total_words == 0:
                 status = "failed"
                 confidence = 0.0
-            elif scanned_pages_count > 0 and scanned_pages_count == total_pages:
-                confidence = 0.75
-                status = "success" if confidence >= 0.7 else "low_confidence"
+            elif ocr_failed_pages > 0:
+                confidence = min(ocr_confidences + [0.0])
+                status = "low_confidence"
+            elif ocr_confidences:
+                confidence = min(ocr_confidences)
+                status = "low_confidence" if confidence < 0.6 else "success"
             else:
                 confidence = 0.95
                 status = "success"
@@ -101,6 +116,7 @@ class DocumentExtractionService:
                 "total_word_count": total_words,
                 "confidence": confidence,
                 "scanned_pages_detected": scanned_pages_count,
+                "ocr_failed_pages": ocr_failed_pages,
                 "pages": pages_data,
                 "is_low_confidence": status == "low_confidence",
             }

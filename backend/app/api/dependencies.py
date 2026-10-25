@@ -63,6 +63,13 @@ def get_current_user(
             detail="User account is inactive or suspended",
         )
 
+    if payload.get("token_version", 0) != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 

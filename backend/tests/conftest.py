@@ -8,19 +8,19 @@ if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
 from app.core.security import create_access_token, hash_password
-from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models.user import User
-from app.services.rag_service import rag_service
 
-# Use in-memory SQLite for testing to ensure complete isolation
+# Use an in-memory database for the regular suite; MySQL tests use a dedicated DB.
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 
 engine = create_engine(
@@ -28,16 +28,37 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+@event.listens_for(engine, "connect")
+def _enable_sqlite_foreign_keys(connection, _record):
+    connection.isolation_level = None
+    cursor = connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
+@event.listens_for(engine, "begin")
+def _begin_sqlite_transaction(connection):
+    connection.exec_driver_sql("BEGIN")
+
+
+TestingSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    join_transaction_mode="create_savepoint",
+)
+settings.APP_ENV = "test"
+settings.LLM_PROVIDER = "mock"
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
-    Base.metadata.create_all(bind=engine)
-    with TestingSessionLocal() as db:
-        rag_service.initialize_reference_corpus(db)
+    alembic_config = Config(str(backend_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(backend_root / "alembic"))
+    with engine.connect() as connection:
+        alembic_config.attributes["connection"] = connection
+        command.upgrade(alembic_config, "head")
     yield
-    Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture

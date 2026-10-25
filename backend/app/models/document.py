@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from app.models.ocr_result import OCRResult
     from app.models.report_analysis import ReportAnalysis
     from app.models.prescription_item import PrescriptionItem
+    from app.models.prescription_record import PrescriptionRecord
 
 
 class Document(Base):
@@ -41,8 +42,13 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
     )
-    prescriptions: Mapped[List["PrescriptionItem"]] = relationship(
+    prescription_items: Mapped[List["PrescriptionItem"]] = relationship(
         "PrescriptionItem",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+    prescription_records: Mapped[List["PrescriptionRecord"]] = relationship(
+        "PrescriptionRecord",
         back_populates="document",
         cascade="all, delete-orphan",
     )

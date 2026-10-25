@@ -1,219 +1,92 @@
 import React, { useState } from 'react';
-import { UploadCloud, FileText, CheckCircle, AlertTriangle, Pill, ShoppingCart, Activity } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { MOCK_EXTRACTED_PRESCRIPTION } from '../data/mockData';
+import { Link } from 'react-router-dom';
+import { AlertTriangle, FileText, UploadCloud } from 'lucide-react';
+import { apiRequest, getToken } from '../api';
 
 const Prescription = () => {
   const [file, setFile] = useState(null);
-  const [dragActive, setDragActive] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [processingStep, setProcessingStep] = useState(0);
-  const [results, setResults] = useState(null);
-  const navigate = useNavigate();
+  const [result, setResult] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState('');
 
-  const stepsText = [
-    'Reading prescription...',
-    'Identifying medicines...',
-    'Checking medicine details...'
-  ];
-
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') setDragActive(true);
-    else if (e.type === 'dragleave') setDragActive(false);
+  const processPrescription = async (event) => {
+    event.preventDefault();
+    if (!file) return;
+    setWorking(true);
+    setError('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('document_type', 'prescription');
+      const document = await apiRequest('/api/v1/documents/upload', { method: 'POST', body: form });
+      const prescription = await apiRequest(`/api/v1/documents/${document.id}/process-prescription`, { method: 'POST' });
+      setResult({ ...prescription, originalFilename: document.original_filename });
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setWorking(false);
+    }
   };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
-  };
-
-  const handleProcess = () => {
-    setProcessing(true);
-    let step = 0;
-    const interval = setInterval(() => {
-      step++;
-      if (step < stepsText.length) {
-        setProcessingStep(step);
-      } else {
-        clearInterval(interval);
-        setProcessing(false);
-        setResults(MOCK_EXTRACTED_PRESCRIPTION);
-      }
-    }, 1500);
-  };
-
-  const handleAddToCart = (medicine) => {
-    // In a real app, this would add to a cart context
-    alert(`${medicine.medicineName} added to cart!`);
-  };
-
-  if (results) {
-    return (
-      <div className="container" style={{ padding: '3rem 0', paddingBottom: '4rem' }}>
-        <div style={{ marginBottom: '2rem' }}>
-          <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '0.5rem' }}>Medicines Found in Prescription</h1>
-          <p style={{ color: 'var(--color-text-muted)' }}>Review the medicines identified from your prescription below.</p>
-        </div>
-
-        {/* Safety notice */}
-        <div className="card" style={{ borderLeft: '4px solid var(--color-warning)', marginBottom: '2rem', backgroundColor: 'var(--color-warning-light)' }}>
-          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-            <AlertTriangle size={24} color="var(--color-warning)" style={{ flexShrink: 0, marginTop: '2px' }} />
-            <div>
-              <h3 style={{ fontWeight: 600, marginBottom: '0.25rem', color: 'var(--color-text-main)' }}>Please verify before purchasing</h3>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9375rem' }}>Always verify prescription information with a pharmacist or doctor before purchasing any medicine. This is an AI-assisted reading and may contain errors.</p>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          {results.map(med => (
-            <div key={med.id} className="card" style={{ borderLeft: `4px solid ${med.status === 'verified' ? 'var(--color-success)' : 'var(--color-warning)'}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <div style={{ backgroundColor: med.status === 'verified' ? 'var(--color-success-light)' : 'var(--color-warning-light)', color: med.status === 'verified' ? 'var(--color-success)' : 'var(--color-warning)', padding: '0.75rem', borderRadius: 'var(--radius-lg)' }}>
-                    <Pill size={24} />
-                  </div>
-                  <div>
-                    <h3 style={{ fontSize: '1.25rem', fontWeight: 600 }}>{med.medicineName}</h3>
-                    <span style={{ color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>{med.strength}</span>
-                  </div>
-                </div>
-                {med.status === 'verified' ? (
-                  <span className="badge bg-success-light"><CheckCircle size={14} style={{ marginRight: '4px' }} /> Verified</span>
-                ) : (
-                  <span className="badge bg-warning-light"><AlertTriangle size={14} style={{ marginRight: '4px' }} /> Needs Review</span>
-                )}
-              </div>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', padding: '1rem', backgroundColor: 'var(--color-bg-page)', borderRadius: 'var(--radius-md)', marginBottom: '1rem' }}>
-                <div>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>Dosage</div>
-                  <div style={{ fontWeight: 600 }}>{med.dosage}</div>
-                </div>
-                <div>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>Frequency</div>
-                  <div style={{ fontWeight: 600 }}>{med.frequency}</div>
-                </div>
-                <div>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>Duration</div>
-                  <div style={{ fontWeight: 600 }}>{med.duration}</div>
-                </div>
-                <div>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem', marginBottom: '0.25rem' }}>Instructions</div>
-                  <div style={{ fontWeight: 600 }}>{med.instructions}</div>
-                </div>
-              </div>
-
-              {med.matchedMedicine && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  <div style={{ fontSize: '0.9375rem', color: 'var(--color-text-muted)' }}>
-                    <strong style={{ color: 'var(--color-text-main)' }}>₹{med.matchedMedicine.price.toFixed(2)}</strong> • {med.matchedMedicine.manufacturer}
-                  </div>
-                  <button className="btn btn-primary" style={{ padding: '0.5rem 1rem' }} onClick={() => handleAddToCart(med)}>
-                    <ShoppingCart size={16} /> Add to Cart
-                  </button>
-                </div>
-              )}
-
-              {!med.matchedMedicine && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <p style={{ fontSize: '0.9375rem', color: 'var(--color-warning)' }}>Could not match this medicine automatically. Please verify with your pharmacist.</p>
-                  <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem' }} onClick={() => navigate('/medicines')}>
-                    Search Medicines
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" onClick={() => { setResults(null); setFile(null); }}>Upload Another Prescription</button>
-          <button className="btn btn-primary" onClick={() => navigate('/cart')}><ShoppingCart size={20} /> View Cart</button>
-        </div>
-      </div>
-    );
-  }
-
-  if (processing) {
-    return (
-      <div className="container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
-        <div className="animate-spin" style={{ color: 'var(--color-primary)', marginBottom: '2rem' }}>
-          <Activity size={64} />
-        </div>
-        <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1rem' }}>{stepsText[processingStep]}</h2>
-        <div style={{ width: '100%', maxWidth: '400px', backgroundColor: 'var(--color-border)', height: '8px', borderRadius: '4px', overflow: 'hidden' }}>
-          <div style={{ width: `${((processingStep + 1) / stepsText.length) * 100}%`, backgroundColor: 'var(--color-primary)', height: '100%', transition: 'width 0.5s ease-in-out' }}></div>
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div className="container" style={{ padding: '4rem 0', maxWidth: '800px' }}>
-      <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
-        <h1 style={{ fontSize: '2.5rem', fontWeight: 700, marginBottom: '1rem' }}>Prescription Assistant</h1>
-        <p style={{ fontSize: '1.125rem', color: 'var(--color-text-muted)', maxWidth: '600px', margin: '0 auto' }}>
-          Upload a prescription and review the medicines identified from it before ordering.
-        </p>
-      </div>
-
-      <div
-        className={`card ${dragActive ? 'bg-primary-light' : ''}`}
-        style={{
-          border: `2px dashed ${dragActive ? 'var(--color-primary)' : 'var(--color-border)'}`,
-          padding: '4rem 2rem',
-          textAlign: 'center',
-          transition: 'all 0.2s',
-          cursor: 'pointer'
-        }}
-        onDragEnter={handleDrag}
-        onDragLeave={handleDrag}
-        onDragOver={handleDrag}
-        onDrop={handleDrop}
-        onClick={() => document.getElementById('prescription-upload').click()}
-      >
-        <input
-          id="prescription-upload"
-          type="file"
-          style={{ display: 'none' }}
-          accept=".pdf,.jpg,.png"
-          onChange={(e) => {
-            if (e.target.files && e.target.files[0]) setFile(e.target.files[0]);
-          }}
-        />
-
-        {!file ? (
-          <>
-            <div style={{ backgroundColor: 'var(--color-primary-light)', color: 'var(--color-primary)', width: '80px', height: '80px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}>
-              <UploadCloud size={40} />
-            </div>
-            <h3 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '0.5rem' }}>Upload your doctor's prescription</h3>
-            <p style={{ color: 'var(--color-text-muted)' }}>Supports PDF, JPG, and PNG</p>
-          </>
-        ) : (
-          <>
-            <div style={{ backgroundColor: 'var(--color-success-light)', color: 'var(--color-success)', width: '80px', height: '80px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}>
-              <FileText size={40} />
-            </div>
-            <h3 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '0.5rem' }}>{file.name}</h3>
-            <p style={{ color: 'var(--color-text-muted)', marginBottom: '1.5rem' }}>
-              {(file.size / 1024 / 1024).toFixed(2)} MB • {file.type || 'Unknown type'}
-            </p>
-            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-              <button className="btn btn-secondary" onClick={(e) => { e.stopPropagation(); setFile(null); }}>Remove</button>
-              <button className="btn btn-primary" onClick={(e) => { e.stopPropagation(); handleProcess(); }}>Process Prescription</button>
-            </div>
-          </>
-        )}
-      </div>
+    <div className="container" style={{ padding: '3rem 0', maxWidth: '850px' }}>
+      <h1 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>Prescription extraction</h1>
+      <p style={{ color: 'var(--color-text-muted)', marginBottom: '1.5rem' }}>Medicine details shown here are extracted from the prescription you upload. OCR may be inaccurate; confirm every detail with a pharmacist or clinician.</p>
+      {!getToken() ? (
+        <div className="card" style={{ textAlign: 'center' }}>
+          <p style={{ marginBottom: '1rem' }}>Sign in to securely upload and view prescriptions.</p>
+          <Link to="/login" className="btn btn-primary">Sign in</Link>
+        </div>
+      ) : (
+        <>
+          {!result && (
+            <form className="card" onSubmit={processPrescription}>
+              <label htmlFor="prescription-file" style={{ display: 'block', padding: '3rem 1rem', textAlign: 'center', border: '2px dashed var(--color-border)', borderRadius: 'var(--radius-md)', cursor: 'pointer' }}>
+                {file ? <FileText size={40} color="var(--color-primary)" /> : <UploadCloud size={40} color="var(--color-primary)" />}
+                <span style={{ display: 'block', marginTop: '1rem', fontWeight: 600 }}>{file?.name || 'Choose a prescription (PDF, PNG, or JPEG)'}</span>
+              </label>
+              <input id="prescription-file" type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={(event) => setFile(event.target.files?.[0] || null)} style={{ display: 'none' }} />
+              <button className="btn btn-primary" type="submit" disabled={!file || working} style={{ width: '100%', marginTop: '1rem' }}>
+                {working ? 'Uploading and extracting…' : 'Upload and extract'}
+              </button>
+            </form>
+          )}
+          {error && <p role="alert" style={{ color: 'var(--color-danger)', marginTop: '1rem' }}>{error}</p>}
+          {result && (
+            <section style={{ marginTop: '1.5rem' }}>
+              <h2 style={{ marginBottom: '0.5rem' }}>{result.originalFilename}</h2>
+              <div className="card" style={{ background: 'var(--color-warning-light)', marginBottom: '1rem' }}>
+                <AlertTriangle size={18} /> Extracted values are unverified. Do not use them to change or start a medication.
+              </div>
+              {result.items.length === 0 ? (
+                <div className="card">No medicine details could be extracted from this prescription.</div>
+              ) : result.items.map((item) => (
+                <article className="card" key={item.id} style={{ marginBottom: '1rem' }}>
+                  <h3 style={{ fontSize: '1.2rem', marginBottom: '0.5rem' }}>{item.extracted_medicine_name}</h3>
+                  <dl style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
+                    <Detail label="Strength" value={item.extracted_strength} />
+                    <Detail label="Instructions" value={item.extracted_instructions} />
+                    <Detail label="Frequency" value={item.frequency} />
+                    <Detail label="Duration" value={item.duration} />
+                    <Detail label="Route" value={item.route} />
+                    <Detail label="Review status" value={item.verification_status.replaceAll('_', ' ')} />
+                  </dl>
+                  {item.confidence_metadata?.needs_human_confirmation && (
+                    <p style={{ color: 'var(--color-warning)', marginTop: '0.75rem' }}>This extraction needs human confirmation.</p>
+                  )}
+                </article>
+              ))}
+              <button className="btn btn-secondary" onClick={() => { setResult(null); setFile(null); }}>Upload another prescription</button>
+            </section>
+          )}
+        </>
+      )}
     </div>
   );
 };
+
+const Detail = ({ label, value }) => (
+  <div><dt style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>{label}</dt><dd>{value || 'Not extracted'}</dd></div>
+);
 
 export default Prescription;

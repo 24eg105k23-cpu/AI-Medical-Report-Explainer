@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, Optional, TYPE_CHECKING
 from sqlalchemy import DateTime, ForeignKey, JSON, String, Text
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, generate_uuid, utc_now
 
@@ -18,7 +19,10 @@ class OCRResult(Base):
         index=True,
         nullable=False,
     )
-    extracted_text: Mapped[str] = mapped_column(Text, nullable=False)
+    extracted_text: Mapped[str] = mapped_column(
+        Text().with_variant(MEDIUMTEXT(), "mysql"),
+        nullable=False,
+    )
     extraction_status: Mapped[str] = mapped_column(String(50), default="success", nullable=False)
     extraction_metadata: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)

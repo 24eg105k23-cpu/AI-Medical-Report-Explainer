@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.models.document import Document
 from app.models.ocr_result import OCRResult
 from app.models.prescription_item import PrescriptionItem
+from app.models.prescription_record import PrescriptionRecord
 from app.models.user import User
 from app.schemas.common import APIResponse
 from app.schemas.prescription import (
@@ -52,10 +53,22 @@ def process_prescription(
             detail="Prescription document has no extracted text. Please ensure the upload is clear or provide text manually.",
         )
 
-    # Clean existing items if re-processing
-    db.query(PrescriptionItem).filter(PrescriptionItem.document_id == document.id).delete()
-
     parsed_items = prescription_parser.parse_prescription_text(ocr_rec.extracted_text)
+    db.query(PrescriptionItem).filter(
+        PrescriptionItem.document_id == document.id
+    ).delete(synchronize_session=False)
+    prescription = (
+        db.query(PrescriptionRecord)
+        .filter(PrescriptionRecord.document_id == document.id)
+        .first()
+    )
+    if prescription is None:
+        prescription = PrescriptionRecord(document_id=document.id)
+        db.add(prescription)
+        db.flush()
+    if parsed_items:
+        prescription.prescriber = parsed_items[0].get("prescriber")
+        prescription.prescription_date = parsed_items[0].get("prescription_date")
 
     saved_items: List[PrescriptionItemResponse] = []
     requires_human_review = False
@@ -63,6 +76,7 @@ def process_prescription(
     for item in parsed_items:
         db_item = PrescriptionItem(
             document_id=document.id,
+            prescription_id=prescription.id,
             extracted_medicine_name=item["extracted_medicine_name"],
             extracted_strength=item.get("extracted_strength"),
             extracted_instructions=item.get("extracted_instructions"),
@@ -75,16 +89,16 @@ def process_prescription(
             verification_status=item.get("verification_status", "pending_confirmation"),
         )
         db.add(db_item)
-        db.commit()
-        db.refresh(db_item)
 
         if db_item.confidence_metadata.get("needs_human_confirmation"):
             requires_human_review = True
 
-        saved_items.append(PrescriptionItemResponse.model_validate(db_item))
+        saved_items.append(db_item)
 
     document.processing_status = "prescription_processed"
     db.commit()
+    for item in saved_items:
+        db.refresh(item)
 
     AuditService.record_event(
         db=db,
@@ -100,7 +114,7 @@ def process_prescription(
         data=PrescriptionListResponse(
             document_id=document.id,
             total_items=len(saved_items),
-            items=saved_items,
+            items=[PrescriptionItemResponse.model_validate(item) for item in saved_items],
             requires_human_review=requires_human_review,
         ),
     )
@@ -155,16 +169,20 @@ def confirm_prescription_item(
     Allow user to verify or rectify an extracted medication name, strength, or dosage instructions.
     Addresses requirement: Never silently convert uncertain handwriting into a confirmed medicine.
     """
-    if confirm_data.confirmed_medicine_name:
+    if (
+        "confirmed_medicine_name" in confirm_data.model_fields_set
+        and confirm_data.confirmed_medicine_name is not None
+    ):
         item.extracted_medicine_name = confirm_data.confirmed_medicine_name
-    if confirm_data.confirmed_strength:
+    if "confirmed_strength" in confirm_data.model_fields_set:
         item.extracted_strength = confirm_data.confirmed_strength
-    if confirm_data.confirmed_instructions:
+    if "confirmed_instructions" in confirm_data.model_fields_set:
         item.extracted_instructions = confirm_data.confirmed_instructions
 
     item.verification_status = confirm_data.status
     meta = dict(item.confidence_metadata)
-    meta["user_confirmed_at"] = True
+    meta["user_reviewed"] = True
+    meta["user_confirmed"] = confirm_data.status == "confirmed_by_user"
     if confirm_data.user_note:
         meta["user_note"] = confirm_data.user_note
     item.confidence_metadata = meta
@@ -174,7 +192,7 @@ def confirm_prescription_item(
 
     AuditService.record_event(
         db=db,
-        event_type="prescription_item_confirmed",
+        event_type="prescription_item_reviewed",
         user_id=current_user.id,
         resource_id=item.id,
         metadata={"status": item.verification_status},

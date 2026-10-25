@@ -1,12 +1,11 @@
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.api.dependencies import get_current_user, get_token_from_header
+from app.api.dependencies import get_current_user
 from app.core.config import settings
 from app.core.security import (
     create_access_token,
     hash_password,
-    revoke_token,
     verify_password,
 )
 from app.db.session import get_db
@@ -89,7 +88,11 @@ def login(
         )
 
     expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    token = create_access_token(subject=user.id, expires_delta=expires_delta)
+    token = create_access_token(
+        subject=user.id,
+        expires_delta=expires_delta,
+        extra_claims={"token_version": user.token_version},
+    )
 
     AuditService.record_event(
         db=db,
@@ -131,14 +134,14 @@ def get_me(current_user: User = Depends(get_current_user)):
     summary="Log out and invalidate current token",
 )
 def logout(
-    token: str = Depends(get_token_from_header),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Invalidate the current JWT token in the token blacklist.
+    Persistently invalidate issued access tokens for this account.
     """
-    revoke_token(token)
+    current_user.token_version += 1
+    db.commit()
     AuditService.record_event(
         db=db,
         event_type="user_logout",

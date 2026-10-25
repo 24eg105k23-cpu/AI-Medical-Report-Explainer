@@ -39,6 +39,14 @@ def get_medical_explanation(
         top_k=settings.VECTOR_SEARCH_TOP_K,
     )
     retrieved_sources = [item[0] for item in chunk_tuples]
+    retrieved_context = [
+        {
+            "source": source.model_dump(mode="json"),
+            "passage": passage,
+            "score": score,
+        }
+        for source, passage, score in chunk_tuples
+    ]
 
     # 2. Query LLM provider with grounding context
     llm = get_llm_provider()
@@ -46,6 +54,7 @@ def get_medical_explanation(
         query=request.query,
         retrieved_sources=retrieved_sources,
         context_values=request.context_values,
+        retrieved_context=retrieved_context,
     )
 
     # 3. Validate citations strictly
@@ -79,7 +88,6 @@ def list_reference_sources(
     """
     List trusted medical references indexed in the knowledge base.
     """
-    rag_service.initialize_reference_corpus(db)
     docs = db.query(ReferenceDocument).all()
     results = [
         ReferenceSourceResponse(

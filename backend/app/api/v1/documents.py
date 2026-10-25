@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user, get_user_document
 from app.core.exceptions import AppError
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.db.session import get_db
 from app.models.document import Document
@@ -43,8 +44,22 @@ async def upload_document(
     if document_type not in ("report", "prescription"):
         document_type = "report"
 
-    # Read uploaded bytes
-    content = await file.read()
+    # Read in bounded chunks so oversized files do not get fully loaded into memory.
+    content_chunks = []
+    total_bytes = 0
+    max_size = settings.MAX_UPLOAD_SIZE_BYTES
+    while True:
+        chunk = await file.read(min(64 * 1024, max_size + 1 - total_bytes))
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File size exceeds maximum limit of {max_size // (1024 * 1024)}MB.",
+            )
+        content_chunks.append(chunk)
+    content = b"".join(content_chunks)
     filename = file.filename or "uploaded_document"
 
     try:
@@ -81,7 +96,9 @@ async def upload_document(
     db.commit()
     db.refresh(doc)
 
-    # Perform immediate OCR / Text extraction
+    # Perform immediate OCR / text extraction. A stored upload is successful even
+    # when extraction fails, but the response and status must say so clearly.
+    extraction_succeeded = False
     try:
         extracted_text, metadata, extraction_status = document_extractor.extract_text(
             file_path=Path(absolute_path),
@@ -95,7 +112,8 @@ async def upload_document(
             extraction_metadata=metadata,
         )
         db.add(ocr_rec)
-        doc.processing_status = "extracted"
+        extraction_succeeded = extraction_status != "failed" and bool(extracted_text.strip())
+        doc.processing_status = "extracted" if extraction_succeeded else "extraction_failed"
         db.commit()
         db.refresh(doc)
     except Exception as e:
@@ -113,7 +131,11 @@ async def upload_document(
 
     return APIResponse(
         success=True,
-        message="Document uploaded and text extracted successfully.",
+        message=(
+            "Document uploaded and text extracted. Review the text before analysis."
+            if extraction_succeeded
+            else "Document uploaded, but text extraction failed. You can enter the text manually before analysis."
+        ),
         data=DocumentResponse.model_validate(doc),
     )
 

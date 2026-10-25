@@ -2,6 +2,7 @@ import json
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 import httpx
 from app.core.config import settings
 from app.core.exceptions import LLMServiceError
@@ -62,6 +63,7 @@ class BaseLLMProvider(ABC):
         lab_values: List[LaboratoryValueSchema],
         retrieved_sources: List[SourceReferenceSchema],
         raw_text_snippet: Optional[str] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
     ) -> StructuredExplanationSchema:
         """Generate structured, validated medical explanation"""
         pass
@@ -72,6 +74,7 @@ class BaseLLMProvider(ABC):
         query: str,
         retrieved_sources: List[SourceReferenceSchema],
         context_values: Optional[List[Dict[str, Any]]] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Answer specific user query using retrieved medical context"""
         pass
@@ -88,6 +91,7 @@ class MockLLMProvider(BaseLLMProvider):
         lab_values: List[LaboratoryValueSchema],
         retrieved_sources: List[SourceReferenceSchema],
         raw_text_snippet: Optional[str] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
     ) -> StructuredExplanationSchema:
         time.sleep(settings.MOCK_AI_RESPONSE_DELAY)
 
@@ -176,6 +180,7 @@ class MockLLMProvider(BaseLLMProvider):
         query: str,
         retrieved_sources: List[SourceReferenceSchema],
         context_values: Optional[List[Dict[str, Any]]] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         time.sleep(settings.MOCK_AI_RESPONSE_DELAY)
         q_lower = query.lower()
@@ -234,6 +239,149 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
 
+class GeminiLLMProvider(BaseLLMProvider):
+    """Google Gemini provider using the REST API and JSON-validated responses."""
+
+    endpoint = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    def __init__(self):
+        self.api_key = settings.GEMINI_API_KEY
+        self.model = settings.GEMINI_MODEL
+
+    def _generate_json(self, system_instruction: str, prompt_data: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.api_key:
+            raise LLMServiceError("GEMINI_API_KEY is not configured in the backend environment.")
+
+        url = f"{self.endpoint}/{quote(self.model, safe='')}:generateContent"
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "contents": [{"role": "user", "parts": [{"text": json.dumps(prompt_data)}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": 0.2,
+            },
+        }
+        try:
+            with httpx.Client(timeout=settings.GEMINI_TIMEOUT_SECONDS) as client:
+                response = client.post(
+                    url,
+                    headers={"x-goog-api-key": self.api_key},
+                    json=payload,
+                )
+                response.raise_for_status()
+            response_data = response.json()
+            candidate = response_data["candidates"][0]
+            response_text = "".join(
+                part["text"] for part in candidate["content"]["parts"] if "text" in part
+            )
+            parsed = json.loads(response_text)
+            if not isinstance(parsed, dict):
+                raise ValueError("Gemini response JSON must be an object.")
+            return parsed
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            logger.error("Gemini API returned HTTP status %s.", status_code)
+            if status_code == 429:
+                raise LLMServiceError(
+                    "Gemini rate limit or quota reached. Wait before retrying, and check the "
+                    "Google AI Studio project quota and billing settings."
+                ) from exc
+            raise LLMServiceError(
+                f"Gemini API request failed with HTTP status {status_code}."
+            ) from exc
+        except httpx.TimeoutException as exc:
+            logger.error("Gemini API request timed out.")
+            raise LLMServiceError(
+                "Gemini did not respond before the request timed out. Please try again."
+            ) from exc
+        except httpx.HTTPError as exc:
+            logger.error("Gemini API transport failed: %s", type(exc).__name__)
+            raise LLMServiceError(
+                "Could not connect to the Gemini API. Check your connection and try again."
+            ) from exc
+        except json.JSONDecodeError as exc:
+            logger.error("Gemini API returned invalid JSON.")
+            raise LLMServiceError(
+                "Gemini returned invalid JSON. Please retry the request."
+            ) from exc
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            logger.error("Gemini API response had an unexpected structure: %s", type(exc).__name__)
+            raise LLMServiceError(
+                "Gemini returned an unexpected response format. Please retry the request."
+            ) from exc
+
+    def generate_explanation(
+        self,
+        lab_values: List[LaboratoryValueSchema],
+        retrieved_sources: List[SourceReferenceSchema],
+        raw_text_snippet: Optional[str] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
+    ) -> StructuredExplanationSchema:
+        system_instruction = (
+            "You explain medical laboratory results for education, not diagnosis or treatment. "
+            "Never diagnose, recommend medication changes, or invent values or reference ranges. "
+            "Use only the supplied lab values and retrieved reference passage text. Cite only supplied references. "
+            "Return a JSON object matching these fields: summary (string), test_explanations "
+            "(array of objects with test_name, what_it_measures, patient_value_summary, "
+            "reference_interval_explanation, status_indication, educational_note), key_findings "
+            "(string array), questions_for_doctor (string array), uncertainties_or_missing_context "
+            "(string array), source_citations (array of supplied reference objects), and "
+            "medical_disclaimer (string). If a range is missing, say it is unavailable."
+        )
+        prompt_data = {
+            "laboratory_values": [value.model_dump(mode="json") for value in lab_values],
+            "retrieved_reference_documents": [source.model_dump(mode="json") for source in retrieved_sources],
+            "retrieved_reference_passages": retrieved_context or [],
+        }
+        try:
+            return StructuredExplanationSchema.model_validate(
+                self._generate_json(system_instruction, prompt_data)
+            )
+        except LLMServiceError:
+            raise
+        except (TypeError, ValueError) as exc:
+            logger.error("Gemini report explanation did not match the required schema.")
+            raise LLMServiceError(
+                "Gemini returned an explanation that did not match the required response format."
+            ) from exc
+
+    def answer_query(
+        self,
+        query: str,
+        retrieved_sources: List[SourceReferenceSchema],
+        context_values: Optional[List[Dict[str, Any]]] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        system_instruction = (
+            "Answer medical questions for general education only. Do not diagnose or recommend "
+            "treatment or medication changes. Ground the answer only in supplied context and "
+            "references; if context is insufficient, say so. Cite only supplied references. "
+            "Return JSON with explanation (string), key_points (string array), "
+            "suggested_doctor_questions (string array), sources (array of supplied reference "
+            "objects), and disclaimer (string)."
+        )
+        prompt_data = {
+            "query": query,
+            "context_values": context_values or [],
+            "retrieved_reference_documents": [source.model_dump(mode="json") for source in retrieved_sources],
+            "retrieved_reference_passages": retrieved_context or [],
+        }
+        try:
+            from app.schemas.explanation import ExplanationResponse
+
+            result = ExplanationResponse.model_validate(
+                {**self._generate_json(system_instruction, prompt_data), "query": query}
+            )
+            return result.model_dump()
+        except LLMServiceError:
+            raise
+        except (TypeError, ValueError) as exc:
+            logger.error("Gemini answer did not match the required schema.")
+            raise LLMServiceError(
+                "Gemini returned an answer that did not match the required response format."
+            ) from exc
+
+
 class OpenAILLMProvider(BaseLLMProvider):
     """
     OpenAI-compatible LLM service (works with OpenAI, Groq, Ollama, etc.)
@@ -241,7 +389,8 @@ class OpenAILLMProvider(BaseLLMProvider):
     """
 
     def __init__(self):
-        self.api_key = settings.OPENAI_API_KEY
+        self.is_custom_endpoint = settings.LLM_PROVIDER.lower() == "custom_http"
+        self.api_key = settings.CUSTOM_LLM_API_KEY if self.is_custom_endpoint else settings.OPENAI_API_KEY
         self.model = settings.OPENAI_MODEL
         self.endpoint = settings.CUSTOM_LLM_ENDPOINT or "https://api.openai.com/v1/chat/completions"
 
@@ -250,10 +399,12 @@ class OpenAILLMProvider(BaseLLMProvider):
         lab_values: List[LaboratoryValueSchema],
         retrieved_sources: List[SourceReferenceSchema],
         raw_text_snippet: Optional[str] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
     ) -> StructuredExplanationSchema:
         if not self.api_key:
-            logger.info("OPENAI_API_KEY not configured, falling back to MockLLMProvider.")
-            return MockLLMProvider().generate_explanation(lab_values, retrieved_sources, raw_text_snippet)
+            raise LLMServiceError(
+                "The configured OpenAI-compatible provider has no API key. Set its key or select LLM_PROVIDER=mock."
+            )
 
         system_prompt = (
             "You are a medical education AI assistant for an educational prototype. "
@@ -261,13 +412,15 @@ class OpenAILLMProvider(BaseLLMProvider):
             "SAFETY REQUIREMENTS:\n"
             "1. NEVER diagnose diseases or recommend medication changes.\n"
             "2. NEVER invent reference ranges or values that are not in the provided report data.\n"
-            "3. ONLY cite references from the provided Reference Documents list.\n"
-            "4. Return strictly valid JSON matching the required schema.\n"
+            "3. Ground reference-based claims only in retrieved passage text.\n"
+            "4. ONLY cite references from the provided Reference Documents list.\n"
+            "5. Return strictly valid JSON matching the required schema.\n"
         )
 
         user_content = {
             "laboratory_values": [v.model_dump() for v in lab_values],
             "retrieved_reference_documents": [s.model_dump() for s in retrieved_sources],
+            "retrieved_reference_passages": retrieved_context or [],
             "schema_requirement": "Return JSON with keys: summary, test_explanations, key_findings, questions_for_doctor, uncertainties_or_missing_context, source_citations, medical_disclaimer",
         }
 
@@ -291,28 +444,80 @@ class OpenAILLMProvider(BaseLLMProvider):
 
                 # Validate with Pydantic
                 return StructuredExplanationSchema(**parsed_json)
-        except Exception as e:
-            logger.error(f"OpenAI call or validation failed: {e}. Falling back to safe mock generator.")
-            return MockLLMProvider().generate_explanation(lab_values, retrieved_sources, raw_text_snippet)
+        except Exception as exc:
+            logger.error("OpenAI-compatible report explanation failed: %s", type(exc).__name__)
+            raise LLMServiceError(
+                "The configured language model could not return a valid explanation. Please retry."
+            ) from exc
 
     def answer_query(
         self,
         query: str,
         retrieved_sources: List[SourceReferenceSchema],
         context_values: Optional[List[Dict[str, Any]]] = None,
+        retrieved_context: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if not self.api_key:
-            return MockLLMProvider().answer_query(query, retrieved_sources, context_values)
+            raise LLMServiceError(
+                "The configured OpenAI-compatible provider has no API key. Set its key or select LLM_PROVIDER=mock."
+            )
 
-        # If live API fails, safe fallback
+        system_prompt = (
+            "You answer medical questions for general education only. Do not diagnose or recommend "
+            "treatment or medication changes. Ground claims in supplied reference passage text and "
+            "context values. Cite only supplied references, and state when context is insufficient. "
+            "Return strictly valid JSON with explanation, key_points, suggested_doctor_questions, "
+            "sources, and disclaimer."
+        )
+        user_content = {
+            "query": query,
+            "context_values": context_values or [],
+            "retrieved_reference_documents": [source.model_dump(mode="json") for source in retrieved_sources],
+            "retrieved_reference_passages": retrieved_context or [],
+        }
         try:
-            # Use mock logic for fallback safety
-            return MockLLMProvider().answer_query(query, retrieved_sources, context_values)
-        except Exception:
-            return MockLLMProvider().answer_query(query, retrieved_sources, context_values)
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_content)},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.2,
+            }
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(self.endpoint, headers=headers, json=payload)
+                response.raise_for_status()
+            parsed = json.loads(response.json()["choices"][0]["message"]["content"])
+            from app.schemas.explanation import ExplanationResponse
+
+            return ExplanationResponse.model_validate({**parsed, "query": query}).model_dump()
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+            logger.error("OpenAI-compatible explanation failed: %s", type(exc).__name__)
+            raise LLMServiceError(
+                "The configured language model could not return a valid explanation. Please retry."
+            ) from exc
 
 
 def get_llm_provider() -> BaseLLMProvider:
-    if settings.LLM_PROVIDER.lower() in ("openai", "custom_http") and settings.OPENAI_API_KEY:
+    provider = settings.LLM_PROVIDER.strip().lower()
+    if provider == "mock":
+        return MockLLMProvider()
+    if provider == "gemini":
+        if not settings.GEMINI_API_KEY:
+            raise LLMServiceError("GEMINI_API_KEY is not configured. Set it or select LLM_PROVIDER=mock.")
+        return GeminiLLMProvider()
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise LLMServiceError("OPENAI_API_KEY is not configured. Set it or select LLM_PROVIDER=mock.")
         return OpenAILLMProvider()
-    return MockLLMProvider()
+    if provider == "custom_http":
+        if not settings.CUSTOM_LLM_ENDPOINT or not settings.CUSTOM_LLM_API_KEY:
+            raise LLMServiceError(
+                "CUSTOM_LLM_ENDPOINT and CUSTOM_LLM_API_KEY are required for LLM_PROVIDER=custom_http."
+            )
+        return OpenAILLMProvider()
+    raise LLMServiceError(
+        f"Unsupported LLM_PROVIDER '{settings.LLM_PROVIDER}'. Choose mock, gemini, openai, or custom_http."
+    )

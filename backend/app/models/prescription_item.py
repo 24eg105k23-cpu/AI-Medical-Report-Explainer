@@ -6,6 +6,7 @@ from app.db.base import Base, generate_uuid, utc_now
 
 if TYPE_CHECKING:
     from app.models.document import Document
+    from app.models.prescription_record import PrescriptionRecord
 
 
 class PrescriptionItem(Base):
@@ -17,6 +18,12 @@ class PrescriptionItem(Base):
         ForeignKey("documents.id", ondelete="CASCADE"),
         index=True,
         nullable=False,
+    )
+    prescription_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("prescription_records.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
     )
     extracted_medicine_name: Mapped[str] = mapped_column(String(255), nullable=False)
     extracted_strength: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -35,4 +42,8 @@ class PrescriptionItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # Relationships
-    document: Mapped["Document"] = relationship("Document", back_populates="prescriptions")
+    document: Mapped["Document"] = relationship("Document", back_populates="prescription_items")
+    prescription: Mapped[Optional["PrescriptionRecord"]] = relationship(
+        "PrescriptionRecord",
+        back_populates="items",
+    )

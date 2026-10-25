@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,10 +22,12 @@ class PrescriptionItemResponse(BaseModel):
 
 
 class PrescriptionConfirmRequest(BaseModel):
-    confirmed_medicine_name: Optional[str] = None
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    confirmed_medicine_name: Optional[str] = Field(default=None, min_length=1)
     confirmed_strength: Optional[str] = None
     confirmed_instructions: Optional[str] = None
-    status: str = Field(default="confirmed_by_user", description="confirmed_by_user or rejected")
+    status: Literal["confirmed_by_user", "rejected"] = "confirmed_by_user"
     user_note: Optional[str] = None
 
 

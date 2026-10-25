@@ -1,17 +1,46 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from app.models.rag_document_metadata import RAGDocumentMetadata
 from app.models.reference_document import ReferenceDocument
 from app.schemas.analysis import SourceReferenceSchema
-from app.services.rag_service import rag_service
+from app.services.rag_service import MockRetriever, SimpleTFIDFEmbedding, rag_service
+
+
+def test_offline_retrieval_strategies_are_deterministic():
+    mock = MockRetriever()
+    local_score = SimpleTFIDFEmbedding.compute_similarity(
+        "hemoglobin red blood cells",
+        "hemoglobin is measured in red blood cells",
+    )
+
+    assert mock.score("hemoglobin levels", "hemoglobin is a blood measurement") == 1.0
+    assert mock.score("unrelated", "hemoglobin is a blood measurement") == 0.0
+    assert 0.0 < local_score <= 1.0
 
 
 def test_rag_retrieval_and_source_metadata(db_session: Session):
-    rag_service.initialize_reference_corpus(db_session)
+    reference = ReferenceDocument(
+        title="CBC lab guide",
+        publisher="Test publisher",
+        source_url="https://example.test/cbc",
+        chunks_metadata=[{
+            "chunk_id": "cbc_1",
+            "section": "Hematology",
+            "text": "Hemoglobin is measured in red blood cells. CBC anemia laboratory values.",
+        }],
+    )
+    reference.rag_metadata = RAGDocumentMetadata(
+        retrieval_backend="local_tfidf",
+        chunk_count=1,
+        index_metadata={},
+    )
+    db_session.add(reference)
+    db_session.flush()
     retrieved = rag_service.retrieve_relevant_sources(db_session, query="Hemoglobin red blood cells anemia", top_k=2)
 
-    assert len(retrieved) > 0
+    assert len(retrieved) == 1
     top_source, chunk_text, score = retrieved[0]
-    assert "CBC" in top_source.title or "Blood" in top_source.title
+    assert top_source.title == "CBC lab guide"
     assert top_source.publisher != ""
     assert top_source.chunk_id is not None
     assert score > 0.0
@@ -56,9 +85,7 @@ def test_reference_sources_endpoint(client: TestClient):
     response = client.get("/api/v1/reference-sources")
     assert response.status_code == 200
     data = response.json()["data"]
-    assert len(data) >= 5
-    titles = [d["title"] for d in data]
-    assert any("Complete Blood Count" in t for t in titles)
+    assert data == []
 
 
 def test_medical_explanation_endpoint(client: TestClient, auth_headers_user_one: dict):
@@ -72,4 +99,4 @@ def test_medical_explanation_endpoint(client: TestClient, auth_headers_user_one:
     assert data["query"] == "What does a high Hemoglobin level indicate?"
     assert len(data["explanation"]) > 20
     assert "disclaimer" in data
-    assert len(data["sources"]) > 0
+    assert data["sources"] == []

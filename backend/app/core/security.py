@@ -1,12 +1,8 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Set
+from typing import Any, Optional
 import bcrypt
 import jwt
 from app.core.config import settings
-
-# In-memory token blacklist for logged out tokens
-_REVOKED_TOKENS: Set[str] = set()
-
 
 def hash_password(password: str) -> str:
     """Hash plain text password with bcrypt salt"""
@@ -56,8 +52,6 @@ def create_access_token(
 
 def decode_access_token(token: str) -> Optional[dict[str, Any]]:
     """Decode and validate JWT access token"""
-    if is_token_revoked(token):
-        return None
     try:
         payload = jwt.decode(
             token,
@@ -67,13 +61,3 @@ def decode_access_token(token: str) -> Optional[dict[str, Any]]:
         return payload
     except (jwt.PyJWTError, Exception):
         return None
-
-
-def revoke_token(token: str) -> None:
-    """Add token to revocation blacklist"""
-    _REVOKED_TOKENS.add(token)
-
-
-def is_token_revoked(token: str) -> bool:
-    """Check if token was revoked"""
-    return token in _REVOKED_TOKENS

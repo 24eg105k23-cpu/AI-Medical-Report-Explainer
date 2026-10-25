@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, Optional, TYPE_CHECKING
-from sqlalchemy import DateTime, Float, ForeignKey, JSON, String
+from sqlalchemy import DateTime, ForeignKey, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, generate_uuid, utc_now
 
@@ -20,7 +21,7 @@ class LaboratoryValue(Base):
     )
     test_name: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     value_text: Mapped[str] = mapped_column(String(100), nullable=False)
-    numeric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    numeric_value: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True)
     unit: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     reference_range: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     abnormality_status: Mapped[str] = mapped_column(
